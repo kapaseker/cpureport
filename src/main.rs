@@ -1,4 +1,3 @@
-use std::{fs, string};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -11,15 +10,15 @@ use rust_xlsxwriter::{RowNum, Workbook};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    ///需要更改的目录
+    /// device id, if not set, just `adb -d`, if set, `adb -s [device]`
     #[arg(short, long)]
     device: Option<String>,
 
-    ///需要更改的zip文件
+    /// app's package to test
     #[arg(short, long)]
     package: String,
 
-    ///测试时长
+    /// test duration
     #[arg(short, long)]
     time: Option<u64>
 }
