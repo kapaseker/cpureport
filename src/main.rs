@@ -30,8 +30,18 @@ fn get_current_time() -> String {
 
 // Function to run adb commands and capture the output
 fn run_adb_command(command: &str) -> String {
-    let output = Command::new("sh")
-        .arg("-c")
+    
+    let mut cmd = if cfg!(target_os = "windows") { 
+        let mut win_cmd = Command::new("cmd");
+        win_cmd.arg("/C");
+        win_cmd
+    } else { 
+        let mut sh_cmd = Command::new("sh");
+        sh_cmd.arg("-c");
+        sh_cmd
+    };
+    
+    let output = cmd
         .arg(command)
         .output()
         .expect("Failed to execute adb command");
