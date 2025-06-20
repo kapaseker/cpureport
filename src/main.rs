@@ -18,7 +18,7 @@ struct Args {
     #[arg(short, long)]
     package: String,
 
-    /// test duration
+    /// test duration (seconds)
     #[arg(short, long)]
     time: Option<u64>
 }
