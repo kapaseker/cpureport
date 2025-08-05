@@ -1,10 +1,10 @@
+use chrono::Local;
+use clap::Parser;
+use rust_xlsxwriter::{RowNum, Workbook};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use chrono::Local;
-use clap::Parser;
-use rust_xlsxwriter::{RowNum, Workbook};
 
 /// Args
 #[derive(Parser, Debug)]
@@ -18,9 +18,13 @@ struct Args {
     #[arg(short, long)]
     package: String,
 
-    /// test duration (seconds)
+    /// test time (seconds, default)
     #[arg(short, long)]
-    time: Option<u64>
+    time: Option<u64>,
+
+    /// test interval (millisecond)
+    #[arg(short, long)]
+    interval: Option<u64>,
 }
 
 // Function to get the current time as a formatted string
@@ -30,17 +34,16 @@ fn get_current_time() -> String {
 
 // Function to run adb commands and capture the output
 fn run_adb_command(command: &str) -> String {
-    
-    let mut cmd = if cfg!(target_os = "windows") { 
+    let mut cmd = if cfg!(target_os = "windows") {
         let mut win_cmd = Command::new("cmd");
         win_cmd.arg("/C");
         win_cmd
-    } else { 
+    } else {
         let mut sh_cmd = Command::new("sh");
         sh_cmd.arg("-c");
         sh_cmd
     };
-    
+
     let output = cmd
         .arg(command)
         .output()
@@ -49,14 +52,18 @@ fn run_adb_command(command: &str) -> String {
 }
 
 // Function to collect CPU data
-fn get_cpu_data(cpu_list: Arc<Mutex<Vec<f64>>>, device:&str, end_time: u64, pkg: &str) {
-    while SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        < end_time
-    {
-        let top_result = run_adb_command(&format!("adb {} shell top -b -n 1 | grep {}", device, pkg));
+fn get_cpu_data(
+    cpu_list: Arc<Mutex<Vec<f64>>>,
+    interval: u64,
+    device: &str,
+    end_time: u64,
+    pkg: &str,
+) {
+    let interval_millis = Duration::from_millis(interval);
+
+    while now() < end_time {
+        let top_result =
+            run_adb_command(&format!("adb {} shell top -b -n 1 | grep {}", device, pkg));
         if let Some(cpu_line) = top_result.lines().next() {
             let cpu_value: f64 = cpu_line
                 .split_whitespace()
@@ -68,43 +75,58 @@ fn get_cpu_data(cpu_list: Arc<Mutex<Vec<f64>>>, device:&str, end_time: u64, pkg:
             println!("CPU: {}", cpu_value);
             cpu_list.lock().unwrap().push(cpu_value);
         }
-        thread::sleep(Duration::from_secs(1));
+        thread::sleep(interval_millis);
     }
     cpu_list.lock().unwrap().remove(0); // Remove the first anomalous value
 }
 
 // Function to collect memory data
-fn get_mem_data(mem_list: Arc<Mutex<Vec<f64>>>, device:&str, end_time: u64, pkg: &str) {
+fn get_mem_data(
+    mem_list: Arc<Mutex<Vec<f64>>>,
+    interval: u64,
+    device: &str,
+    end_time: u64,
+    pkg: &str,
+) {
+    let interval_millis = Duration::from_millis(interval);
 
-    while SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        < end_time
-    {
+    while now() < end_time {
         let mem_result = run_adb_command(&format!("adb {} shell dumpsys meminfo {}", device, pkg));
         mem_result.lines().for_each(|line| {
             if line.contains("TOTAL PSS:") {
                 // println!("{}", line);
-                let pss_memory = line.split_whitespace().collect::<Vec<&str>>().get(2).unwrap_or(&"0").parse().unwrap_or(0.0);
-                println!("Mem: {}", pss_memory);
+                let pss_memory = line
+                    .split_whitespace()
+                    .collect::<Vec<&str>>()
+                    .get(2)
+                    .unwrap_or(&"0")
+                    .parse()
+                    .unwrap_or(0.0);
+                println!("MEM: {}", pss_memory);
                 mem_list.lock().unwrap().push(pss_memory);
             }
         });
-        thread::sleep(Duration::from_secs(3));
+        thread::sleep(interval_millis);
     }
 
     // 通常执行脚本第一个数据异常的高，移除第一个数据
     mem_list.lock().unwrap().remove(0);
 }
 
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
 // Main function
 fn main() {
-
     let args = Args::parse();
     let pkg = args.package;
     let device = args.device.unwrap_or("".to_string());
     let duration = args.time.unwrap_or(60);
+    let interval = args.interval.unwrap_or(1000);
 
     println!("测试包名为: {}", pkg);
 
@@ -122,8 +144,10 @@ fn main() {
         .as_secs()
         + duration;
 
-    println!("测试时长为: {}", duration);
-    println!("结束时间为: {}", end_time);
+    println!("测试间隔为: {}(milliseconds)", interval);
+    println!("测试时长为: {}(seconds)", duration);
+    println!("结束时间为: {}(timestamp)", end_time);
+
 
     let f_path = ".";
 
@@ -135,14 +159,14 @@ fn main() {
         let cpu_list = Arc::clone(&cpu_list);
         let pkg = pkg.clone();
         let device_cmd = device_cmd.clone();
-        thread::spawn(move || get_cpu_data(cpu_list, &device_cmd, end_time, &pkg))
+        thread::spawn(move || get_cpu_data(cpu_list, interval, &device_cmd, end_time, &pkg))
     };
 
     let mem_thread = {
         let mem_list = Arc::clone(&mem_list);
         let pkg = pkg.clone();
         let device_cmd = device_cmd.clone();
-        thread::spawn(move || get_mem_data(mem_list, &device_cmd, end_time, &pkg))
+        thread::spawn(move || get_mem_data(mem_list, interval, &device_cmd, end_time, &pkg))
     };
 
     // Wait for threads to finish
@@ -163,11 +187,18 @@ fn main() {
     let cpu_sum = cpu_data.iter().sum::<f64>();
 
     let cpu_average: f64 = cpu_sum / cpu_data.len() as f64;
-    let cpu_max = cpu_data.iter().max_by(|a, b| a.total_cmp(b)).unwrap_or(&0.0);
+    let cpu_max = cpu_data
+        .iter()
+        .max_by(|a, b| a.total_cmp(b))
+        .unwrap_or(&0.0);
 
     let mem_sum = mem_data.iter().sum::<f64>();
     let mem_average: f64 = mem_sum / (mem_data.len() as f64 * 1024.0);
-    let mem_max = mem_data.iter().max_by(|a, b| a.total_cmp(b)).unwrap_or(&0.0) / 1024.0;
+    let mem_max = mem_data
+        .iter()
+        .max_by(|a, b| a.total_cmp(b))
+        .unwrap_or(&0.0)
+        / 1024.0;
 
     println!("cpu均值: {}", cpu_average);
     println!("cpu峰值: {}", cpu_max);
@@ -182,8 +213,20 @@ fn main() {
         cpu_data.iter().enumerate().for_each(|(idx, cpu)| {
             sheet.write(idx as RowNum, 1, cpu.to_string()).unwrap();
         });
-        sheet.write_row(cpu_data.len() as RowNum, 0, ["Cpu Max", cpu_max.to_string().as_str()]).unwrap();
-        sheet.write_row(cpu_data.len() as RowNum + 1, 0, ["Cpu Average", cpu_average.to_string().as_str()]).unwrap();
+        sheet
+            .write_row(
+                cpu_data.len() as RowNum,
+                0,
+                ["Cpu Max", cpu_max.to_string().as_str()],
+            )
+            .unwrap();
+        sheet
+            .write_row(
+                cpu_data.len() as RowNum + 1,
+                0,
+                ["Cpu Average", cpu_average.to_string().as_str()],
+            )
+            .unwrap();
 
         workbook.save(&cpu_file_path).unwrap();
     }
@@ -197,8 +240,20 @@ fn main() {
             sheet.write(idx as RowNum, 1, memory.to_string()).unwrap();
         });
 
-        sheet.write_row(mem_data.len() as RowNum, 0, ["Mem Max", mem_max.to_string().as_str()]).unwrap();
-        sheet.write_row(mem_data.len() as RowNum + 1, 0, ["Mem Average", mem_average.to_string().as_str()]).unwrap();
+        sheet
+            .write_row(
+                mem_data.len() as RowNum,
+                0,
+                ["Mem Max", mem_max.to_string().as_str()],
+            )
+            .unwrap();
+        sheet
+            .write_row(
+                mem_data.len() as RowNum + 1,
+                0,
+                ["Mem Average", mem_average.to_string().as_str()],
+            )
+            .unwrap();
 
         workbook.save(&mem_file_path).unwrap();
     }
